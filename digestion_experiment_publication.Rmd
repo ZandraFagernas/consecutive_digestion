@@ -1,0 +1,1578 @@
+---
+title: "Consecutive digestion manuscript"
+author: "Zandra Fagernäs
+output: html_notebook
+---
+
+This notebook contains all analyses conducted for the manuscript "Digging deeper into ancient skeletal proteomes through consecutive digestion with multiple proteases". MaxQuant results and metadata can be found on ProteomeXchange (accession number will be added once published). The blanks were inspected during preliminary analysis, but are filtered out for statistics and figures. Probable contaminants were identified by going through the protein lists.
+
+```{r }
+library(MetBrewer) #Use Derain
+library(janitor)
+library(ggpubr)
+library(venn)
+library(lmerTest)
+library(lme4)
+library(MASS)
+library(Hmisc)
+library(vegan)
+library(ggseqlogo)
+library(tidyverse)
+
+meta <- read_delim("<PATH_TO>/metadata.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() 
+```
+
+# Single-protease digestion
+
+## Protein number
+
+```{r}
+# Load datasets and clean
+protein_cow <- read_delim("<PATH_TO>/proteinGroups.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names()  %>% 
+  filter(!reverse %in% c("+")) %>% 
+  filter(str_detect(fasta_headers, "BOVIN")) %>%
+  filter(!str_detect(fasta_headers, "LOC100848132|Keratin|A7YWU6_BOVIN|CTRB_BOVIN|CTRA_BOVIN|TRY1_BOVIN|A0A3Q1LWD8_BOVIN|protease")) %>%
+  dplyr::select(fasta_headers, 16:20)
+protein_horse <- read_delim("<PATH_TO>/proteinGroups.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names()  %>% 
+  filter(!reverse %in% c("+"))  %>% 
+  filter(str_detect(fasta_headers, "HORSE")) %>%
+  filter(!str_detect(fasta_headers, "LOC100055297|Keratin|A0A3Q2IAH5_HORSE|F6T323_HORSE|LOC100146723|protease|A0A5F5PWX5_HORSE"))%>%
+  dplyr::select(fasta_headers, 20:28)
+
+# Long format, filter for identified proteins per sample, edit sample IDs
+protein_cow <- protein_cow %>%
+  gather(sample, peptides, 2:6) %>%
+  filter(peptides > 0) %>%
+  mutate(sample = gsub('razor_unique_peptides_', '', sample))
+protein_horse <- protein_horse %>%
+  gather(sample, peptides, 2:10) %>%
+  filter(peptides > 0) %>%
+  mutate(sample = gsub('razor_unique_peptides_', '', sample)) %>%
+  filter(!sample == "blank")
+  
+# Combine datasets
+protein <- full_join(protein_cow, protein_horse)
+
+# Count proteins 
+protein_summary <- protein %>%
+  group_by(sample) %>%
+  summarize(protein_count = n())
+
+# Add metadata
+protein_summary <- left_join(protein_summary, meta)
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(protein_count~bone, data=protein_summary))
+MASS::boxcox(lm(protein_count~enzyme, data=protein_summary)) 
+
+# Checking transformation
+ggqqplot(sqrt(protein_summary$protein_count))
+hist(sqrt(protein_summary$protein_count))
+
+# Full model - start with full and decrease as needed
+model1 <- lm(sqrt(protein_count) ~ enzyme, data = protein_summary)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE)
+
+# Null model
+model0 <- lm(sqrt(protein_count) ~ 1, data = protein_summary)
+
+# Compare models
+anova(model1, model0) 
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1)) 
+
+# Plot
+protein_count_fig <- ggplot(protein_summary, aes(x=sample, y=protein_count, fill=enzyme)) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~bone, scales = "free_x") +
+  scale_fill_manual(values=met.brewer("Derain", 5), name="Enzyme") +
+  xlab("") +
+  ylab("Protein count") +
+  theme_bw() +
+  theme(axis.text.x=element_blank())
+```
+
+## Non-collagenous proteins
+
+```{r}
+# Count NCPs
+NCP_summary <- protein %>%
+  filter(!str_detect(fasta_headers, "Collagen")) %>%
+  group_by(sample) %>%
+  summarize(ncp_count = n())
+
+# Add protein count
+NCP_summary <- left_join(NCP_summary, protein_summary)
+
+# Calculate percent NCPs
+NCP_summary$ncp_perc <- (NCP_summary$ncp_count / NCP_summary$protein_count) * 100
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(ncp_perc~enzyme, data=NCP_summary))
+MASS::boxcox(lm(ncp_perc~bone+enzyme, data=NCP_summary))
+
+# Checking transformation
+ggqqplot(NCP_summary$ncp_perc)
+hist(NCP_summary$ncp_perc)
+
+# Full model - start with full and decrease as needed
+model1 <- lm(ncp_perc ~ enzyme, data = NCP_summary)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE)
+
+# Null model
+model0 <- lm(ncp_perc ~ 1, data = NCP_summary)
+
+# Compare models
+anova(model1, model0)
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+# Plot
+ncp_figure <- ggplot(NCP_summary, aes(x=sample, y=ncp_perc, fill=enzyme)) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~bone, scales = "free_x") +
+  scale_fill_manual(values=met.brewer("Derain", 5)) +
+  xlab("") +
+  ylab("NCP %") +
+  theme_bw() +
+  theme(axis.text.x=element_blank())
+```
+
+## Peptide number
+
+```{r}
+# Count peptides
+peptide_summary <- protein %>%
+  group_by(sample) %>%
+  summarize(peptide_count = sum(peptides))
+
+# Add metadata
+peptide_summary <- left_join(peptide_summary, meta)
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(peptide_count~bone, data=peptide_summary))
+MASS::boxcox(lm(peptide_count~enzyme, data=peptide_summary))
+
+# Checking transformation
+ggqqplot(sqrt(peptide_summary$peptide_count)) # Good
+hist(sqrt(peptide_summary$peptide_count)) # Not great, but very few observations
+
+# Full model - start with full and decrease as needed
+model1 <- lm(sqrt(peptide_count) ~ enzyme, data = peptide_summary)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE)
+
+# Null model
+model0 <- lm(sqrt(peptide_count) ~ 1, data = peptide_summary)
+
+# Compare models
+anova(model1, model0)
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1)) 
+
+# Plot
+peptide_count_fig <- ggplot(peptide_summary, aes(x=sample, y=peptide_count, fill=enzyme)) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~bone, scales = "free_x") +
+  scale_fill_manual(values=met.brewer("Derain", 5), name="Enzyme") +
+  xlab("") +
+  ylab("Peptide count") +
+  theme_bw() +
+  theme(axis.text.x=element_blank())
+
+# Combine figures
+proteome_fig <- ggarrange(protein_count_fig, peptide_count_fig, length,
+          common.legend=TRUE, nrow=1, labels=c("a)", "b)", "c)"), legend="bottom")
+
+# Export pdf
+ggsave("<PATH_TO>/enzexp1_proteome.pdf", plot=proteome_fig, width=12, height=4)
+```
+
+## PCA
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Load datasets and clean
+gene_cow <- read_delim("<PATH_TO>/proteinGroups.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names()  %>% 
+  filter(!reverse %in% c("+")) %>% 
+  filter(str_detect(fasta_headers, "BOVIN")) %>%
+  filter(!str_detect(fasta_headers, "LOC100848132|Keratin|A7YWU6_BOVIN|CTRB_BOVIN|CTRA_BOVIN|TRY1_BOVIN|A0A3Q1LWD8_BOVIN|protease")) %>%
+  dplyr::select(fasta_headers, 47:51)
+gene_horse <- read_delim("<PATH_TO>/proteinGroups.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names()  %>% 
+  filter(!reverse %in% c("+"))  %>% 
+  filter(str_detect(fasta_headers, "HORSE")) %>%
+filter(!str_detect(fasta_headers, "LOC100055297|Keratin|A0A3Q2IAH5_HORSE|F6T323_HORSE|LOC100146723|protease|A0A5F5PWX5_HORSE")) %>%
+  dplyr::select(fasta_headers, 67:75)
+
+# Extract gene names
+gene_cow <- gene_cow %>%
+  separate(fasta_headers, c("remove", "gene"), "GN=") %>%
+  separate(gene, c("gene", "remove2"), " PE=") %>%
+  dplyr::select(-remove, -remove2) %>%
+  filter(!is.na(gene))
+gene_horse <- gene_horse %>%
+  separate(fasta_headers, c("remove", "gene"), "GN=") %>%
+  separate(gene, c("gene", "remove2"), " PE=") %>%
+  dplyr::select(-remove, -remove2) %>%
+  filter(!is.na(gene))
+
+# Combine datasets
+genes_all <- full_join(gene_cow, gene_horse) %>%
+  mutate(across(where(is.numeric), ~ replace_na(.x, 0)))
+
+# Filter for presence in two samples 
+genes_all$presence <- rowSums(genes_all[2:15] != 0)
+genes_all <- genes_all %>%
+  filter(presence > 1) %>%
+  dplyr::select(-presence)
+
+# Transpose
+genes_all <- genes_all %>%
+  gather(sample, intensity, 2:15) %>%
+  spread(gene, intensity) %>%
+  replace(is.na(.), 0)
+
+# Fix sample names
+genes_all <- genes_all %>%
+  mutate(sample = gsub('intensity_', '', sample))
+
+# Pseudocount zero replacement
+genes_all[,2:ncol(genes_all)] <- genes_all[,2:ncol(genes_all)]+1
+
+# Log-transformation
+genes_all[,2:ncol(genes_all)] <- log2(genes_all[,2:ncol(genes_all)])
+
+# Create PCA object
+pca_all <- prcomp(genes_all[, 2:255], scale=FALSE)
+
+# Extract values
+pca_out <- as_tibble(pca_all$x)
+
+# Add metadata
+pca_out$sample <- genes_all$sample
+pca_out <- left_join(pca_out, meta)
+
+# Calculate percent explained per PC
+percentage <- round(pca_all$sdev / sum(pca_all$sdev) * 100, 2)
+percentage <- paste(colnames(pca_out), "(", paste(
+  as.character(percentage), "%", ")", sep="") )
+
+# Get variables with biggest impact for PC1 and PC2
+pca_all$rotation[,1] %>% sort() %>% head(1)
+pca_all$rotation[,1] %>% sort(decreasing = TRUE) %>% head(1)
+pca_all$rotation[,2] %>% sort() %>% head(1)
+pca_all$rotation[,2] %>% sort(decreasing = TRUE) %>% head(1)
+
+# Get rownames for each protein
+which(rownames(pca_all$rotation) %in% 
+        c("COL22A1", "F2", "COL12A1", "ZFHX4"))
+
+# Create matrix of x (PC1) coordinates and y (PC2) 
+l.x <- cbind(pca_all$rotation[,1][c(45,52,94,246)]) * 500
+l.y <- cbind(pca_all$rotation[,2][c(45,52,94,246)]) * 500
+
+# Plot
+pca <- ggplot(data = pca_out, aes(x = PC1, y = PC2, fill=enzyme, shape=bone)) +
+  geom_point(size=6, stroke=1) +
+  xlab(percentage[1]) + 
+  ylab(percentage[2]) +
+  scale_fill_manual(values=met.brewer(n=5, name="Derain")) +
+  scale_shape_manual(values=c(21,22,23)) +
+  guides(fill=guide_legend(override.aes=list(shape=21, size=5))) +
+  theme_minimal(base_size = 10) +
+  annotate("segment", x=0, xend=l.x, y=0, yend=l.y, colour="black", 
+           size=1, arrow=arrow()) + 
+  annotate("text", x=l.x, y=l.y, label=rownames(l.x), color="black")
+
+# Export plot
+ggsave("<PATH_TO>/enzexp1_pca.pdf", plot=pca, width=8, height=6)
+
+# Basic permanova with euclidean distance as metric
+pca_meta <- left_join(genes_all, meta) %>%
+  dplyr::select(sample, enzyme, bone, age, reference)
+permanova <- adonis(genes_all[, 2:255] ~ enzyme + age, 
+                    data=pca_meta,
+                    permutations=999,
+                    method="euclidean")
+permanova
+
+# Checking assumptions
+dist <- vegdist(genes_all[, 2:255])
+anova(betadisper(dist, pca_meta$bone))
+```
+
+## Protein overlap
+
+```{r}
+# Add metadata
+protein_venn <- left_join(protein, meta)
+
+# Filter for samples separately, select columns
+sct_venn <- protein_venn %>%
+  filter(bone=="SCT9") %>%
+  filter(peptides > 0) %>%
+  dplyr::select(fasta_headers, enzyme)
+lf_venn <- protein_venn %>%
+  filter(bone=="LF59") %>%
+  filter(peptides > 0) %>%
+  dplyr::select(fasta_headers, enzyme)
+grl_venn <- protein_venn %>%
+  filter(bone=="GRL12497") %>%
+  filter(peptides > 0) %>%
+  dplyr::select(fasta_headers, enzyme)
+
+# Make list
+sct_venn <- list(
+  trypsin = sct_venn %>% filter(enzyme == "Trypsin") %>% pull(fasta_headers),
+  chymo = sct_venn %>% filter(enzyme == "Chymotrypsin") %>%pull(fasta_headers),
+  glu = sct_venn %>% filter(enzyme == "Glu-C") %>%pull(fasta_headers),
+  lys = sct_venn %>% filter(enzyme == "LysargiNase") %>%pull(fasta_headers),
+  pro = sct_venn %>% filter(enzyme == "ProAlanase") %>%pull(fasta_headers))
+lf_venn <- list(
+  trypsin = lf_venn %>% filter(enzyme == "Trypsin") %>% pull(fasta_headers),
+  chymo = lf_venn %>% filter(enzyme == "Chymotrypsin") %>%pull(fasta_headers),
+  glu = lf_venn %>% filter(enzyme == "Glu-C") %>%pull(fasta_headers),
+  lys = lf_venn %>% filter(enzyme == "LysargiNase") %>%pull(fasta_headers),
+  pro = lf_venn %>% filter(enzyme == "ProAlanase") %>%pull(fasta_headers))
+grl_venn <- list(
+  trypsin = grl_venn %>% filter(enzyme == "Trypsin") %>% pull(fasta_headers),
+  chymo = grl_venn %>% filter(enzyme == "Chymotrypsin") %>%pull(fasta_headers),
+  glu = grl_venn %>% filter(enzyme == "Glu-C") %>%pull(fasta_headers),
+  pro = grl_venn %>% filter(enzyme == "ProAlanase") %>%pull(fasta_headers))
+
+# Plot
+sct_venn_fig <- venn(sct_venn, ilables = "counts", zcolor=met.brewer("Derain", 5))
+lf_venn_fig <- venn(lf_venn, ilables = "counts", zcolor=met.brewer("Derain", 5))
+grl_venn_fig <- venn(grl_venn, ilables = "counts", zcolor=met.brewer("Derain", 5))
+```
+
+## Protein coverage
+
+COL1A1 - P02453 and A0A5F5Q281.
+AHSG/FETUA - P12763 and A0A5F5Q0V8.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Load peptide files
+pep_cow <- read_delim("<PATH_TO>/peptides.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(str_detect(proteins, "P12763")) %>%
+  dplyr::select(62:66, start_position, end_position)
+pep_horse <- read_delim("<PATH_TO>/peptides.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(str_detect(proteins, "A0A5F5Q0V8")) %>%
+  dplyr::select(70:78, start_position, end_position)
+
+# Fix sample names
+colnames(pep_cow)[1:5] <- c("sct_chy", "sct_glu", "sct_lys", "sct_pro", "sct_try")
+colnames(pep_horse)[1:9] <- c("grl_chy", "grl_glu", "grl_pro", "grl_try","lf_chy", "lf_glu", "lf_lys", "lf_pro", "lf_try")
+
+# Combine datasets
+pep_all <- full_join(pep_cow, pep_horse) %>%
+  dplyr::select(start_position, end_position, 1:5, 8:16)
+
+# Expand numbers between start and end to get a dataframe of all covered positions
+pep_all <- pep_all %>%
+  mutate(covered = map2(start_position, end_position, seq, by=1))  
+pos_list <- pep_all %>% dplyr::select(covered) %>%
+  mutate(covered = map(covered, ~as_data_frame(t(.x)))) %>% unnest()
+pep_all <- cbind(pep_all, pos_list)
+
+# Gather to long form
+pep_all <- pep_all %>%
+  gather("remove", "position", 18:37) %>% 
+  dplyr::select(-start_position, -end_position, -covered, -remove) %>%
+  filter(position > 0) %>%
+  gather("sample", "intensity", 1:14) %>%
+  filter(intensity > 0)
+
+# Sum intensity per position
+pep_summary <- pep_all %>%
+  group_by(position, sample) %>%
+  summarize(total_intensity = sum(intensity))
+
+# Add metadata
+pep_summary <- left_join(pep_summary, meta) %>%
+  dplyr::select(position, sample, total_intensity, enzyme, bone)
+
+# log2 intensity
+pep_summary$intensity_log2 <- log2(pep_summary$total_intensity)
+
+# Separate into species (cut collagen only)
+pep_summary_cow <- pep_summary %>%
+  filter(bone == "SCT9") 
+  filter(position < 1217)
+pep_summary_horse <- pep_summary %>%
+  filter(bone %in% c("GRL12497", "LF59"))
+  filter(position < 1184)
+
+# Reorder for plotting
+pep_summary_cow$sample <- factor(pep_summary_cow$sample, 
+                                 levels=c("sct_try", "sct_chy", "sct_glu", "sct_lys", "sct_pro"))
+pep_summary_horse$sample <- factor(pep_summary_horse$sample, levels=c("grl_try", "lf_try",
+                                                          "grl_chy", "lf_chy",
+                                                          "grl_glu", "lf_glu",
+                                                          "lf_lys",
+                                                          "grl_pro", "lf_pro"))
+
+
+# Plot
+fetua_cow <- ggplot(pep_summary_cow, aes(x=position, y=sample)) +
+  geom_raster(aes(fill=intensity_log2)) +
+  scale_fill_gradient(low="#e9eaf2ff", high="#6e9867ff", name="Intensity (log2)") +
+  xlab("") + ylab("") +
+  theme_bw()
+
+# Combine plots
+col1a1 <- ggarrange(col1a1_cow, col1a1_horse, common.legend=TRUE, ncol=1, heights=c(3,4))
+fetua <- ggarrange(fetua_cow, fetua_horse, common.legend=TRUE, ncol=1)
+coverage <- ggarrange(col1a1, fetua, labels=c("a)", "b)"), common.legend=TRUE, widths = c(2,1))
+
+# Export plot
+ggsave("<PATH_TO>/enzexp1_coverage.pdf", coverage, width=10, height=4)
+```
+
+## Peptide length
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Load data
+evidence_cow<- read_delim("<PATH_TO>/evidence.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(!reverse %in% c("+")) %>%
+  filter(!str_detect(proteins, "F1N152|A0A452DI93|P00766|A0A3Q1LWD8|Q29S21|Q08D91|A5D7M6|Q32LI2|P0C1U8|ENSBTAP00000018229|P04264|P00761|P07477|P0C1U8")) %>%
+  dplyr::select(proteins, length, experiment, intensity) 
+evidence_horses <- read_delim("<PATH_TO>/evidence.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(!reverse %in% c("+")) %>%
+  filter(!str_detect(proteins, "F6T323|F6S8W6|A0A3Q2LCW0|F7C210|A0A5F5PWX5|F6TW38|F7C2N1|P0C1U8|P00761|P00766|P04264|F7BC37|P13645|P35527|P35908|P07477")) %>%
+  dplyr::select(proteins, length, experiment, intensity) 
+
+# Combine files
+evidence <- full_join(evidence_cow, evidence_horses) %>%
+  filter(intensity > 0) %>%
+  filter(!experiment == "blank")
+
+# Add metadata
+evidence <- left_join(evidence, meta, by=c("experiment"="sample"))
+
+# Summarize
+length_summary <- evidence %>%
+  group_by(experiment, enzyme, bone, age, reference) %>%
+  dplyr::summarise(mean_length = weighted.mean(x=length, w=intensity, na.rm=TRUE),
+                   weighted_var= wtd.var(x=length, w=intensity, na.rm=TRUE))
+length_summary$weighted_sd <- sqrt(length_summary$weighted_var)
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(mean_length~bone, data=length_summary))
+MASS::boxcox(lm(mean_length~enzyme, data=length_summary))
+
+# Checking transformation
+ggqqplot(1/(length_summary$mean_length)) 
+hist(1/(length_summary$mean_length)) 
+
+# Full model - start with full and decrease as needed
+model1 <- lmer(1/(mean_length) ~ enzyme + (1|age), data = length_summary)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) 
+
+# Null model
+model0 <- lmer(1/(mean_length) ~ 1 + (1|age), data = length_summary)
+
+# Compare models
+anova(model1, model0) 
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+# Plot
+length <- ggplot(length_summary, aes(x=experiment, y=mean_length, fill=enzyme)) + 
+  geom_bar(stat="identity") +
+  geom_errorbar(aes(ymin=mean_length-weighted_sd, ymax=mean_length+weighted_sd), width=.2,
+                 position=position_dodge(.9)) +
+  facet_wrap(~bone, scales = "free_x") +
+  scale_fill_manual(values=met.brewer("Derain", 5), name="Enzyme") +
+  xlab("") +
+  ylab("Mean length weighted by intensity") +
+  theme_bw() +
+  theme(axis.text.x=element_blank())
+```
+
+## Hydroxyprolines
+
+```{r}
+# Load and clean evidence files
+evidence_cow <- read_delim("<PATH_TO>/evidence.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>% 
+  filter(!reverse %in% c("+")) %>% 
+  filter(!str_detect(proteins, "F1N152|A0A452DI93|P00766|A0A3Q1LWD8|Q29S21|Q08D91|A5D7M6|Q32LI2|P0C1U8|ENSBTAP00000018229|P04264|P00761|P07477|P0C1U8")) %>%
+  select(sequence, experiment, intensity, modified_sequence, leading_proteins,
+         deamidation_nq, oxidation_m, hydroxyproline, gln_pyro_glu, glu_pyro_glu)
+evidence_horse <- read_delim("<PATH_TO>/evidence.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>% 
+  filter(!reverse %in% c("+")) %>% 
+  filter(!str_detect(proteins, "F6T323|F6S8W6|A0A3Q2LCW0|F7C210|A0A5F5PWX5|F6TW38|F7C2N1|P0C1U8|P00761|P00766|P04264|F7BC37|P13645|P35527|P35908|P07477")) %>%
+  select(sequence, experiment, intensity, modified_sequence, leading_proteins,
+         deamidation_nq, oxidation_m, hydroxyproline, gln_pyro_glu, glu_pyro_glu)
+
+# Reduce to only hydroxyprolines
+hydro_cow <- evidence_cow %>%
+  dplyr::select(sequence, hydroxyproline, experiment)
+hydro_horses <- evidence_horse %>%
+  dplyr::select(sequence, hydroxyproline, experiment)
+
+# Combine
+hydro <- full_join(hydro_cow, hydro_horses)
+
+# Count number of P in peptide
+hydro$count_p <- str_count(hydro$sequence, "P")
+
+# Remove peptides with no P
+hydro <- hydro %>% filter(count_p > 0)
+
+# Fraction hydroxyproline
+hydro$fraction_hydro <- hydro$hydroxyproline / hydro$count_p
+
+# Mean fraction hydroxyproline by sample
+hydro_summary <- hydro %>%
+  group_by(experiment) %>%
+  dplyr::summarize(mean_hydro = mean(fraction_hydro))
+
+# Add metadata
+hydro_summary <- left_join(hydro_summary, meta, by=c("experiment"="sample")) %>%
+  filter(!experiment == "blank")
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(mean_hydro~age, data=hydro_summary))
+MASS::boxcox(lm(mean_hydro~enzyme, data=hydro_summary)) 
+
+# Checking transformation
+ggqqplot(1/(hydro_summary$mean_hydro)) 
+hist(1/(hydro_summary$mean_hydro)) 
+
+# Full model - start with full and decrease as needed 
+model1 <- lm(1/mean_hydro ~ enzyme, data = hydro_summary)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) 
+
+# Null model
+model0 <- lm(1/mean_hydro ~ 1, data = hydro_summary)
+
+# Compare models
+anova(model1, model0)
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+# Plot
+ggplot(hydro_summary, aes(x=bone, y=mean_hydro, fill=enzyme)) + 
+  geom_bar(stat="identity", position="dodge") +
+  scale_fill_manual(values=met.brewer("Derain", 5), name="Enzyme") +
+  xlab("") +
+  theme_bw()  +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+## Deamidation
+
+This analysis is based on output from the deamidate.py script published by Mackie et al. 2018. Input was cleaned evidence.txt files.
+
+```{r}
+# Load results
+deam <- read.csv("<PATH_TO>/enzexp1_deamidation.txt", sep="") %>%
+  clean_names()
+
+# Extract stagetip number
+deam <- deam %>%
+  mutate(raw_file = gsub('_Bone', '', raw_file)) %>%
+  separate(raw_file, c("remove", "stagetip"), sep="DDA_") %>%
+  select(-remove)
+
+# Add metadata
+deam <- left_join(deam, meta)
+
+# Separate into N and Q for stats
+deam_n <- deam %>% filter(n_q == "N")
+deam_q <- deam %>% filter(n_q == "Q")
+
+### Stats N
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(mean~bone, data=deam_n))
+MASS::boxcox(lm(mean~enzyme, data=deam_n)) 
+
+# Checking transformation
+ggqqplot(log(deam_n$mean)) 
+hist(log(deam_n$mean)) 
+
+# Full model - start with full and decrese as needed
+model1 <- lmer(log(mean) ~ enzyme + (1|age), data = deam_n)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) 
+
+# Null model
+model0 <- lmer(log(mean) ~ 1 + (1|age), data = deam_n)
+
+# Compare models
+anova(model1, model0)
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+### Stats Q
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(mean~bone, data=deam_q))
+MASS::boxcox(lm(mean~enzyme, data=deam_q)) 
+
+# Checking transformation
+ggqqplot(deam_q$mean^2) 
+hist(deam_q$mean^2) 
+
+# Full model - start with full and decrese as needed
+model1 <- lmer(mean^2 ~ enzyme + (1|age), data = deam_q)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) 
+
+# Null model
+model0 <- lmer(mean^2 ~ 1 + (1|age), data = deam_q)
+
+# Compare models
+anova(model1, model0)
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+# Plot
+deamidation_fig <- ggplot(deam, aes(x=n_q, y=mean, fill=enzyme)) + 
+  geom_bar(stat="identity", position="dodge") +
+  geom_errorbar(aes(ymin=mean-std, ymax=mean+std), width=.2,
+                 position=position_dodge(.9)) +
+  scale_fill_manual(values=met.brewer("Derain", 5), name="Enzyme") +
+  facet_grid(~bone) +
+  xlab("") + 
+  ylab("Deamidation") +
+  theme_bw() 
+
+# Combine figures
+damage <- ggarrange(length, deamidation_fig, common.legend=TRUE, 
+                    labels=c("a)", "b)"), widths=c(3,4))
+
+# Export figure
+ggsave("<PATH_TO>/enzexp1_damage.pdf", damage, width=9, height=4)
+```
+
+## Cleavage sites
+
+```{r}
+# Import datasets 
+peptide_cow <- read_delim("<PATH_TO>/peptides.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(!reverse %in% c("+")) %>%
+  filter(!str_detect(proteins, "F1N152|A0A452DI93|P00766|A0A3Q1LWD8|Q29S21|Q08D91|A5D7M6|Q32LI2|P0C1U8|ENSBTAP00000018229|P04264|P00761|P07477|P0C1U8")) %>%
+  select("n_term_cleavage_window", 62:66)
+peptide_horse <- read_delim("<PATH_TO>/peptides.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(!reverse %in% c("+")) %>%
+  filter(!str_detect(proteins, "F6T323|F6S8W6|A0A3Q2LCW0|F7C210|A0A5F5PWX5|F6TW38|F7C2N1|P0C1U8|P00761|P00766|P04264|F7BC37|P13645|P35527|P35908|P07477")) %>%
+  select("n_term_cleavage_window", 70:78)
+
+# Remove peptides with missing aa's
+peptide_cow <- peptide_cow %>%
+  filter(!grepl('_', n_term_cleavage_window))
+peptide_horse <- peptide_horse %>%
+  filter(!grepl('_', n_term_cleavage_window))
+
+# Filter for  presence
+peptide_cow <- peptide_cow %>%
+  pivot_longer(names_to = "enzyme", values_to = "intensity", 2:6) %>%
+  filter(intensity >0) %>%
+  separate(enzyme, c("remove", "sample"), "sity_") %>%
+  select(-remove)
+peptide_horse <- peptide_horse %>%
+  pivot_longer(names_to = "enzyme", values_to = "intensity", 2:10) %>%
+  filter(intensity >0) %>%
+  separate(enzyme, c("remove", "sample"), "sity_") %>%
+  select(-remove)
+
+# Cut first and last 10 aa's
+peptide_cow <- peptide_cow %>%
+  mutate(n_term_cleavage_window = str_sub(n_term_cleavage_window, 11, -1)) %>%
+  mutate(n_term_cleavage_window = str_sub(n_term_cleavage_window, end=-11))
+peptide_horse <- peptide_horse %>%
+  mutate(n_term_cleavage_window = str_sub(n_term_cleavage_window, 11, -1)) %>%
+  mutate(n_term_cleavage_window = str_sub(n_term_cleavage_window, end=-11))
+
+# Add metadata
+peptide_cow <- left_join(peptide_cow, meta)
+peptide_horse <- left_join(peptide_horse, meta)
+
+# Summarize
+peptide_cow_summary <- peptide_cow %>%
+  select(n_term_cleavage_window, enzyme, bone) %>%
+  distinct()
+peptide_horse_summary <- peptide_horse %>%
+  select(n_term_cleavage_window, enzyme, bone) %>%
+  distinct()
+
+# Make into list - there's gotta be a more smooth way to do this but I'm tired
+peptide_cow_trypsin <- peptide_cow_summary %>%
+  filter(enzyme == "Trypsin")
+peptide_cow_chy <- peptide_cow_summary %>%
+  filter(enzyme == "Chymotrypsin")
+peptide_cow_glu <- peptide_cow_summary %>%
+  filter(enzyme == "Glu-C")
+peptide_cow_pro <- peptide_cow_summary %>%
+  filter(enzyme == "ProAlanase")
+peptide_cow_lys <- peptide_cow_summary %>%
+  filter(enzyme == "LysargiNase")
+peptide_cow_list <- list(peptide_cow_trypsin$n_term_cleavage_window,
+                       peptide_cow_chy$n_term_cleavage_window,
+                       peptide_cow_glu$n_term_cleavage_window,
+                       peptide_cow_pro$n_term_cleavage_window,
+                       peptide_cow_lys$n_term_cleavage_window)
+names(peptide_cow_list) <- c("Trypsin", "Chymotrypsin", "Glu-C", "ProAlanase", "LysargiNase") 
+
+peptide_horse_trypsin <- peptide_horse_summary %>%
+  filter(enzyme == "Trypsin")
+peptide_horse_chy <- peptide_horse_summary %>%
+  filter(enzyme == "Chymotrypsin")
+peptide_horse_glu <- peptide_horse_summary %>%
+  filter(enzyme == "Glu-C")
+peptide_horse_pro <- peptide_horse_summary %>%
+  filter(enzyme == "ProAlanase")
+peptide_horse_lys <- peptide_horse_summary %>%
+  filter(enzyme == "LysargiNase")
+peptide_horse_list <- list(peptide_horse_trypsin$n_term_cleavage_window,
+                       peptide_horse_chy$n_term_cleavage_window,
+                       peptide_horse_glu$n_term_cleavage_window,
+                       peptide_horse_pro$n_term_cleavage_window,
+                       peptide_horse_lys$n_term_cleavage_window)
+names(peptide_horse_list) <- c("Trypsin", "Chymotrypsin", "Glu-C", "ProAlanase", "LysargiNase") 
+
+# Plot
+seq_cow <- ggseqlogo(peptide_cow_list, ncol=2)
+seq_horse <- ggseqlogo(peptide_horse_list, ncol=2)
+
+seq_logos <- ggarrange(seq_cow, seq_horse, nrow=1, common.legend=TRUE, legend="bottom",
+          labels=c("a)", "b)"))
+```
+
+
+# Consecutive digestion
+
+## Protein number
+
+```{r}
+# Load datasets and clean
+protein_horse <- read_delim("<PATH_TO>/combined/txt/proteinGroups.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names()  %>% 
+  filter(!reverse %in% c("+"))  %>% 
+  filter(str_detect(fasta_headers, "HORSE")) %>%
+  filter(!str_detect(fasta_headers, "LOC100055297|Keratin|Trypsin|trypsinogen|protease")) %>%
+  dplyr::select(fasta_headers, 33:54)
+protein_cow <- read_delim("<PATH_TO>/proteinGroups.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names()  %>% 
+  filter(!reverse %in% c("+"))  %>% 
+  filter(str_detect(fasta_headers, "BOVIN")) %>%
+  filter(!str_detect(fasta_headers, "LOC100848132|Keratin|A7YWU6_BOVIN|CTRB_BOVIN|CTRA_BOVIN|TRY1_BOVIN|Trypsin|trypsinogen|protease")) %>%
+  dplyr::select(fasta_headers, 21:30)
+
+# Long format, filter for identified proteins per sample, edit sample IDs
+protein_horse <- protein_horse %>%
+  gather(sample, peptides, 2:23) %>%
+  filter(peptides > 0) %>%
+  mutate(sample = gsub('peptides_', '', sample))
+protein_cow <- protein_cow %>%
+  gather(sample, peptides, 2:11) %>%
+  filter(peptides > 0) %>%
+  mutate(sample = gsub('peptides_', '', sample))
+
+# Combine datasets
+protein <- full_join(protein_horse, protein_cow)
+
+# Count proteins 
+protein_summary <- protein %>%
+  group_by(sample) %>%
+  dplyr::summarize(protein_count = n()) %>%
+  mutate(sample = gsub('razor_unique_', '', sample))
+
+# Add metadata
+protein_summary <- left_join(protein_summary, meta)
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(protein_count~bone, data=protein_summary))
+MASS::boxcox(lm(protein_count~enzyme, data=protein_summary))
+
+# Checking transformation
+ggqqplot(log(protein_summary$protein_count))
+hist(log(protein_summary$protein_count))
+
+# Full model - start with full and decrease as needed
+model1 <- lmer(log(protein_count) ~ enzyme + (1|age), data = protein_summary)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) 
+
+# Null model
+model0 <- lmer(log(protein_count) ~ 1 + (1|age), data = protein_summary)
+
+# Compare models
+anova(model1, model0) 
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+# Plot
+protein_count <- ggplot(protein_summary, aes(x=enzyme, y=protein_count, fill=enzyme)) + 
+  geom_boxplot() +
+  stat_summary(fun.y=median, geom="point", shape=21, size=3.5) +
+  facet_wrap(~bone) +
+  scale_y_continuous(limits = c(0, NA)) +
+  scale_fill_manual(values=met.brewer("Derain", 5), name="Enzyme") +
+  xlab("") +
+  ylab("Protein count") +
+  theme_bw() +
+  theme(axis.text.x=element_blank())
+```
+
+## Non-collagenous proteins
+
+```{r}
+# Count NCPs
+NCP_summary <- protein %>%
+  filter(!str_detect(fasta_headers, "Collagen")) %>%
+  group_by(sample) %>%
+  dplyr::summarize(ncp_count = n()) %>%
+  mutate(sample = gsub('razor_unique_', '', sample))
+
+# Add protein count
+NCP_summary <- left_join(NCP_summary, protein_summary)
+
+# Calculate percent NCPs
+NCP_summary$ncp_perc <- (NCP_summary$ncp_count / NCP_summary$protein_count) * 100
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(ncp_perc~enzyme, data=NCP_summary))
+MASS::boxcox(lm(ncp_perc~bone+enzyme, data=NCP_summary))
+
+# Checking transformation
+ggqqplot(log(NCP_summary$ncp_perc)) 
+hist(log(NCP_summary$ncp_perc)) 
+
+# Full model - start with full and decrease as needed
+model1 <- lmer(log(ncp_perc) ~ enzyme + (1|bone), data = NCP_summary)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) # None needed
+
+# Null model
+model0 <- lmer(log(ncp_perc) ~ 1 + (1|bone), data = NCP_summary)
+
+# Compare models
+anova(model1, model0) 
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+# Plot
+ggplot(NCP_summary, aes(x=enzyme, y=ncp_perc, fill=enzyme)) + 
+  geom_boxplot() +
+  facet_wrap(~bone, scales = "free_x") +
+  scale_fill_manual(values=met.brewer("Derain", 5)) +
+  xlab("") +
+  ylab("NCP %") +
+  theme_bw() +
+  theme(axis.text.x=element_blank())
+```
+
+## Peptide number
+
+```{r}
+# Count peptides
+peptide_summary <- protein %>%
+  group_by(sample) %>%
+  dplyr::summarize(peptide_count = sum(peptides)) %>%
+  mutate(sample = gsub('razor_unique_', '', sample))
+
+# Add metadata
+peptide_summary <- left_join(peptide_summary, meta)
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(peptide_count~bone, data=peptide_summary))
+MASS::boxcox(lm(peptide_count~enzyme, data=peptide_summary)) 
+
+# Checking transformation
+ggqqplot(log(peptide_summary$peptide_count))
+hist(log(peptide_summary$peptide_count))
+
+# Full model - start with full and decrease as needed
+model1 <- lmer(log(peptide_count) ~ enzyme + (1|age), data = peptide_summary)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) 
+
+# Null model
+model0 <- lmer(log(peptide_count) ~ 1 + (1|age), data = peptide_summary)
+
+# Compare models
+anova(model1, model0) 
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+# Plot
+peptide_count <- ggplot(peptide_summary, aes(x=enzyme, y=peptide_count, fill=enzyme)) + 
+  geom_boxplot() +
+  stat_summary(fun.y=median, geom="point", shape=21, size=3.5) +
+  facet_wrap(~bone) +
+  scale_y_continuous(limits = c(0, NA)) +
+  scale_fill_manual(values=met.brewer("Derain", 5), name="Enzyme") +
+  xlab("") +
+  ylab("Peptide count") +
+  theme_bw() +
+  theme(axis.text.x=element_blank())
+
+# Combine plots
+count_fig <- ggarrange(protein_count, peptide_count,
+          common.legend=TRUE, nrow=1, labels=c("a)", "b)"), legend="bottom")
+
+# Export figure
+ggsave("<PATH_TO>/enzexp2_protein_peptide_count.pdf", count_fig, width=8, height=4)
+```
+
+## PCA
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Load datasets and clean
+gene_horse <- read_delim("<PATH_TO>/proteinGroups.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names()  %>% 
+  filter(!reverse %in% c("+"))  %>% 
+  filter(str_detect(fasta_headers, "HORSE")) %>%
+  filter(!str_detect(fasta_headers, "LOC100055297|Keratin|Trypsin|trypsinogen|protease")) %>%
+  dplyr::select(fasta_headers, 132:153)
+gene_cow <- read_delim("<PATH_TO>/proteinGroups.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names()  %>% 
+  filter(!reverse %in% c("+"))  %>% 
+  filter(str_detect(fasta_headers, "BOVIN")) %>%
+  filter(!str_detect(fasta_headers, "LOC100848132|Keratin|A7YWU6_BOVIN|CTRB_BOVIN|CTRA_BOVIN|TRY1_BOVIN|Trypsin|trypsinogen|protease")) %>%
+  dplyr::select(fasta_headers, 72:81)
+
+# Extract gene names
+gene_horse <- gene_horse %>%
+  separate(fasta_headers, c("remove", "gene"), "GN=") %>%
+  separate(gene, c("gene", "remove2"), " PE=") %>%
+  dplyr::select(-remove, -remove2) %>%
+  filter(!is.na(gene))
+gene_cow <- gene_cow %>%
+  separate(fasta_headers, c("remove", "gene"), "GN=") %>%
+  separate(gene, c("gene", "remove2"), " PE=") %>%
+  dplyr::select(-remove, -remove2) %>%
+  filter(!is.na(gene))
+
+# Combine datasets
+genes_all <- full_join(gene_cow, gene_horse) %>%
+  mutate(across(where(is.numeric), ~ replace_na(.x, 0)))
+
+# Filter for presence in two samples 
+genes_all$presence <- rowSums(genes_all[2:33] != 0)
+genes_all <- genes_all %>%
+  filter(presence > 1) %>%
+  dplyr::select(-presence)
+
+# Transpose
+genes_all <- genes_all %>%
+  gather(sample, intensity, 2:33) %>%
+  group_by(sample, gene) %>%
+  dplyr::summarize(intensity = sum(intensity)) %>%
+  ungroup() %>%
+  spread(gene, intensity) %>%
+  replace(is.na(.), 0)
+
+# Fix sample names
+genes_all <- genes_all %>%
+  mutate(sample = gsub('intensity_', '', sample))
+
+# Pseudocount zero replacement
+genes_all[,2:ncol(genes_all)] <- genes_all[,2:ncol(genes_all)]+1
+
+# Log-transformation
+genes_all[,2:ncol(genes_all)] <- log2(genes_all[,2:ncol(genes_all)])
+
+# Create PCA object
+pca_all <- prcomp(genes_all[, 2:301], scale=FALSE)
+
+# Extract values
+pca_out <- as_tibble(pca_all$x)
+
+# Add metadata
+pca_out$sample <- genes_all$sample
+pca_out <- left_join(pca_out, meta)
+
+# Calculate percent explained per PC
+percentage <- round(pca_all$sdev / sum(pca_all$sdev) * 100, 2)
+percentage <- paste(colnames(pca_out), "(", paste(
+  as.character(percentage), "%", ")", sep="") )
+
+# Get variables with biggest impact for PC1 and PC2
+pca_all$rotation[,1] %>% sort() %>% head(1)
+pca_all$rotation[,1] %>% sort(decreasing = TRUE) %>% head(1)
+pca_all$rotation[,2] %>% sort() %>% head(1)
+pca_all$rotation[,2] %>% sort(decreasing = TRUE) %>% head(1)
+
+# Get rownames for each protein
+which(rownames(pca_all$rotation) %in% 
+        c("COLEC12", "MGP", "CHERP", "COL19A1"))
+
+# Create matrix of x (PC1) coordinates and y (PC2) (duplicates removed)
+l.x <- cbind(pca_all$rotation[,1][c(47,60,81,185)]) * 300
+l.y <- cbind(pca_all$rotation[,2][c(47,60,81,185)]) * 300
+
+# Plot
+pca <- ggplot(data = pca_out, aes(x = PC1, y = PC2, fill=enzyme, shape=bone)) +
+  geom_point(size=6, stroke=1) +
+  xlab(percentage[1]) + 
+  ylab(percentage[2]) +
+  scale_fill_manual(values=met.brewer(n=5, name="Derain")) +
+  scale_shape_manual(values=c(21,22,23)) +
+  guides(fill=guide_legend(override.aes=list(shape=21, size=5))) +
+  theme_minimal(base_size = 10) +
+  annotate("segment", x=0, xend=l.x, y=0, yend=l.y, colour="black", 
+           size=1, arrow=arrow()) + 
+  annotate("text", x=l.x, y=l.y, label=rownames(l.x), color="black")
+
+# Export plot
+ggsave("I:/SCIENCE-SNM-PP_priv/Users/Zandra/Manuscripts/enzexp/enzexp2_pca_20231114.pdf", pca, width=8, height=6)
+
+# Basic permanova with euclidean distance as metric
+pca_meta <- left_join(genes_all, meta) %>%
+  dplyr::select(sample, enzyme, bone, age)
+permanova <- adonis(genes_all[, 2:301] ~ enzyme + age + bone, 
+                    data=pca_meta,
+                    permutations=999,
+                    method="euclidean")
+permanova
+
+# Checking assumptions
+dist <- vegdist(genes_all[, 2:301])
+anova(betadisper(dist, pca_meta$age))
+```
+
+## Protein overlap
+
+```{r}
+# Add metadata
+protein_venn <- protein %>%
+  mutate(sample = gsub('razor_unique_', '', sample))
+protein_venn <- left_join(protein_venn, meta) 
+
+# Filter for samples separately, select columns
+sct_venn <- protein_venn %>%
+  filter(bone=="SCT9") %>%
+  filter(peptides > 0) %>%
+  dplyr::select(fasta_headers, enzyme)
+f35_venn <- protein_venn %>%
+  filter(bone=="F35") %>%
+  filter(peptides > 0) %>%
+  dplyr::select(fasta_headers, enzyme)
+grl_venn <- protein_venn %>%
+  filter(bone=="GRL12497") %>%
+  filter(peptides > 0) %>%
+  dplyr::select(fasta_headers, enzyme)
+
+# Make list
+sct_venn <- list(
+  chy_try = sct_venn %>% filter(enzyme == "Chymotrypsin+trypsin") %>% pull(fasta_headers),
+  glu_try = sct_venn %>% filter(enzyme == "Glu-C+trypsin") %>%pull(fasta_headers),
+  try = sct_venn %>% filter(enzyme == "Trypsin") %>%pull(fasta_headers),
+  pro_try = sct_venn %>% filter(enzyme == "ProAlanase+trypsin") %>%pull(fasta_headers))
+f35_venn <- list(
+  chy_try = f35_venn %>% filter(enzyme == "Chymotrypsin+trypsin") %>% pull(fasta_headers),
+  glu_try = f35_venn %>% filter(enzyme == "Glu-C+trypsin") %>%pull(fasta_headers),
+  try = f35_venn %>% filter(enzyme == "Trypsin") %>%pull(fasta_headers),
+  pro_try = f35_venn %>% filter(enzyme == "ProAlanase+trypsin") %>%pull(fasta_headers))
+grl_venn <- list(
+  chy_try = grl_venn %>% filter(enzyme == "Chymotrypsin+trypsin") %>% pull(fasta_headers),
+  glu_try = grl_venn %>% filter(enzyme == "Glu-C+trypsin") %>%pull(fasta_headers),
+  try = grl_venn %>% filter(enzyme == "Trypsin") %>%pull(fasta_headers),
+  pro_try = grl_venn %>% filter(enzyme == "ProAlanase+trypsin") %>%pull(fasta_headers))
+
+# Plot
+sct_venn_fig <- venn(sct_venn, ilables = "counts", zcolor=met.brewer("Derain", 5))
+f35_venn_fig <- venn(f35_venn, ilables = "counts", zcolor=met.brewer("Derain", 5))
+grl_venn_fig <- venn(grl_venn, ilables = "counts", zcolor=met.brewer("Derain", 5))
+```
+
+## Protein coverage
+
+COL1A1 - P02453 and A0A5F5Q281.
+AHSG/FETUA - P12763 and A0A5F5Q0V8.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Load peptide files
+pep_horse <- read_delim("<PATH_TO>/peptides.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(str_detect(proteins, "A0A5F5Q0V8")) %>%
+  dplyr::select(92:113, start_position, end_position)
+pep_cow <- read_delim("<PATH_TO>/peptides.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(str_detect(proteins, "P12763")) %>%
+  dplyr::select(68:77, start_position, end_position)
+
+# Fix sample names
+colnames(pep_horse)[1:22] <- c("f35_chy_try1", "f35_chy_try2", "f35_chy_try3",
+                               "f35_glu_try1", "f35_glu_try2", "f35_glu_try3",
+                               "f35_pro_try1", "f35_pro_try2",
+                               "f35_try1", "f35_try2", "f35_try3",
+                               "grl_chy_try1", "grl_chy_try2", "grl_chy_try3",
+                               "grl_glu_try1", "grl_glu_try2", "grl_glu_try3",
+                               "grl_pro_try1", "grl_pro_try2",
+                               "grl_try1", "grl_try2", "grl_try3")
+colnames(pep_cow)[1:10] <- c("sct_chy_try1", "sct_chy_try2", "sct_chy_try3",
+                               "sct_glu_try1", "sct_glu_try2", "sct_glu_try3",
+                               "sct_pro_try1", 
+                               "sct_try1", "sct_try2", "sct_try3")
+
+# Expand numbers between start and end to get a dataframe of all covered positions
+pep_horse <- pep_horse %>%
+  mutate(covered = map2(start_position, end_position, seq, by=1))  
+pos_list <- pep_horse %>% dplyr::select(covered) %>%
+  mutate(covered = map(covered, ~as_data_frame(t(.x)))) %>% unnest()
+pep_horse <- cbind(pep_horse, pos_list)
+
+pep_cow <- pep_cow %>%
+  mutate(covered = map2(start_position, end_position, seq, by=1))  
+pos_list <- pep_cow %>% dplyr::select(covered) %>%
+  mutate(covered = map(covered, ~as_data_frame(t(.x)))) %>% unnest()
+pep_cow <- cbind(pep_cow, pos_list)
+
+# Gather to long form
+pep_horse <- pep_horse %>%
+  gather("remove", "position", 26:48) %>% 
+  dplyr::select(-start_position, -end_position, -covered, -remove) %>%
+  filter(position > 0) %>%
+  gather("sample", "intensity", 1:22) %>%
+  filter(intensity > 0)
+
+pep_cow <- pep_cow %>%
+  gather("remove", "position", 14:38) %>% 
+  dplyr::select(-start_position, -end_position, -covered, -remove) %>%
+  filter(position > 0) %>%
+  gather("sample", "intensity", 1:10) %>%
+  filter(intensity > 0)
+
+# Combine datasets
+pep_combined <- full_join(pep_horse, pep_cow)
+
+# Sum intensity per position
+pep_summary <- pep_combined %>%
+  group_by(position, sample) %>%
+  dplyr::summarize(total_intensity = sum(intensity))
+
+# Add metadata
+pep_summary <- left_join(pep_summary, meta) %>%
+  dplyr::select(position, sample, total_intensity, enzyme, bone)
+
+# Average between replicates
+pep_summary <- pep_summary %>%
+  group_by(position, bone, enzyme) %>%
+  dplyr::summarize(mean_intensity = mean(total_intensity))
+
+# log2 intensity
+pep_summary$intensity_log2 <- log2(pep_summary$mean_intensity)
+
+# Combine bone and enzyme columns
+pep_summary <- pep_summary %>%
+  unite(sample, bone:enzyme, remove=FALSE) 
+
+# Separate into species, cut collagen
+pep_summary_cow <- pep_summary %>%
+  filter(bone == "SCT9") 
+  filter(position < 1217)
+pep_summary_horse <- pep_summary %>%
+  filter(bone %in% c("GRL12497", "F35"))
+  filter(position < 1184)
+
+# Plot
+fetua_cow <- ggplot(pep_summary_cow, aes(x=position, y=sample)) +
+  geom_raster(aes(fill=intensity_log2)) +
+  scale_fill_gradient(low="#e9eaf2ff", high="#6e9867ff", name="Intensity (log2)") +
+  xlab("") + ylab("") +
+  theme_bw()
+
+# Combine plots
+col1a1 <- ggarrange(col_cow, col_horse, common.legend=TRUE, ncol=1, heights=c(3,5))
+fetua <- ggarrange(fetua_cow, fetua_horse, common.legend=TRUE, ncol=1, heights=c(3,5))
+coverage <- ggarrange(col1a1, fetua, labels=c("a)", "b)"), common.legend=TRUE, widths = c(2,1))
+
+# Export figure
+ggsave("<PATH_TO>/enzexp2_coverage.pdf", coverage, width=16, height=4)
+```
+
+## Peptide length
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Load data
+evidence_horse <- read_delim("<PATH_TO>/evidence.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(!reverse %in% c("+")) %>%
+  filter(!str_detect(proteins, "F6T323|F7BC37|P13645|P0C1U8|P00766|P00761|P35527|P35908|P00766|P04264|P07477|P35908|P13645")) %>%
+  dplyr::select(proteins, length, experiment, intensity)
+evidence_cow <- read_delim("<PATH_TO>/evidence.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(!reverse %in% c("+")) %>%
+  filter(!str_detect(proteins, "P00766|A0A452DI93|F1N152|P0C1U8|P00761|P07477")) %>%
+  dplyr::select(proteins, length, experiment, intensity)
+
+# Combine files
+evidence <- full_join(evidence_cow, evidence_horse) %>%
+  filter(intensity > 0)
+
+# Add metadata
+evidence <- left_join(evidence, meta, by=c("experiment"="sample"))
+
+# Summarize
+length_summary <- evidence %>%
+  filter(!experiment == "Blank") %>%
+  group_by(experiment, enzyme, bone, age) %>%
+  dplyr::summarise(mean_length = weighted.mean(x=length, w=intensity, na.rm=TRUE))
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(mean_length~bone, data=length_summary))
+MASS::boxcox(lm(mean_length~enzyme, data=length_summary))
+
+# Checking transformation
+ggqqplot(length_summary$mean_length)
+hist(length_summary$mean_length) 
+
+# Full model - start with full and decrease as needed
+model1 <- lm(mean_length ~ enzyme, data = length_summary)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) 
+
+# Null model
+model0 <- lm(mean_length ~ 1, data = length_summary)
+
+# Compare models
+anova(model1, model0)
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+# Plot
+length <- ggplot(length_summary, aes(x=enzyme, y=mean_length, fill=enzyme)) + 
+  geom_boxplot() +
+  stat_summary(fun.y=median, geom="point", shape=21, size=3.5) +
+  facet_wrap(~bone) +
+  expand_limits(y=0) +
+  scale_fill_manual(values=met.brewer("Derain", 5), name="Enzyme") +
+  xlab("") +
+  ylab("Mean length weighted by intensity") +
+  theme_bw() +
+  theme(axis.text.x=element_blank())
+```
+
+## Hydroxyproline
+
+```{r}
+# Load and clean evidence files
+evidence_cow <- read_delim("<PATH_TO>/evidence.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(!reverse %in% c("+")) %>%
+  filter(!str_detect(proteins, "P00766|A0A452DI93|F1N152|P0C1U8|P00761|P07477")) %>%
+  select(sequence, experiment, intensity, modified_sequence, 
+         deamidation_nq, oxidation_m, hydroxyproline, gln_pyro_glu, glu_pyro_glu) 
+evidence_horse <- read_delim("<PATH_TO>/evidence.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(!reverse %in% c("+")) %>%
+  filter(!str_detect(proteins, "F6T323|F7BC37|P13645|P0C1U8|P00766|P00761|P35527|P35908|P00766|P04264|P07477|P35908|P13645")) %>%
+  select(sequence, experiment, intensity, modified_sequence, 
+         deamidation_nq, oxidation_m, hydroxyproline, gln_pyro_glu, glu_pyro_glu)
+
+# Subset to hydroxyproline
+hydro_cow <- evidence_cow %>%
+  dplyr::select(sequence, hydroxyproline, experiment)
+hydro_horses <- evidence_horse %>%
+  dplyr::select(sequence, hydroxyproline, experiment)
+
+# Combine
+hydro <- full_join(hydro_cow, hydro_horses)
+
+# Count number of P in peptide
+hydro$count_p <- str_count(hydro$sequence, "P")
+
+# Remove peptides with no P
+hydro <- hydro %>% filter(count_p > 0)
+
+# Fraction hydroxyproline
+hydro$fraction_hydro <- hydro$hydroxyproline / hydro$count_p
+
+# Mean fraction hydroxyproline by sample
+hydro_summary <- hydro %>%
+  group_by(experiment) %>%
+  dplyr::summarize(mean_hydro = mean(fraction_hydro))
+
+# Add metadata
+hydro_summary <- left_join(hydro_summary, meta, by=c("experiment"="sample")) %>%
+  filter(!experiment == "blank")
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(mean_hydro~bone, data=hydro_summary))
+MASS::boxcox(lm(mean_hydro~enzyme, data=hydro_summary)) 
+
+# Checking transformation
+ggqqplot(hydro_summary$mean_hydro)
+hist(hydro_summary$mean_hydro) 
+
+# Full model - start with full and reduce as needed 
+model1 <- lmer(mean_hydro ~ enzyme + (1|bone), data = hydro_summary)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) 
+
+# Null model
+model0 <- lmer(mean_hydro ~ 1 + (1|bone), data = hydro_summary)
+
+# Compare models
+anova(model1, model0)
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+# Plot
+ggplot(hydro_summary, aes(x=enzyme, y=mean_hydro, fill=enzyme)) + 
+  geom_boxplot() +
+  stat_summary(fun.y=median, geom="point", shape=21, size=3.5) +
+  facet_wrap(~bone) +
+  expand_limits(y=0) +
+  scale_fill_manual(values=met.brewer("Derain", 5), name="Enzyme") +
+  xlab("") +
+  ylab("") +
+  theme_bw() +
+  theme(axis.text.x=element_blank())
+```
+
+# Deamidation
+
+This analysis is based on output from the deamidate.py script published by Mackie et al. 2018. Input was cleaned evidence.txt files.
+
+```{r}
+# Load results
+deam <- read.csv("<PATH_TO>/enzexp2_deamidation.txt", sep="") %>%
+  clean_names()
+
+# Extract stagetip number
+deam <- deam %>%
+  separate(raw_file, c("remove", "stagetip"), sep="DDA_") %>%
+  select(-remove)
+
+# Add metadata
+deam <- left_join(deam, meta) %>%
+  filter(!bone == "blank")
+
+# Separate into N and Q for stats
+deam_n <- deam %>% filter(n_q == "N")
+deam_q <- deam %>% filter(n_q == "Q")
+
+### N
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(mean~bone, data=deam_n))
+MASS::boxcox(lm(mean~enzyme, data=deam_n)) 
+
+# Checking transformation
+ggqqplot(log(deam_n$mean)) 
+hist(log(deam_n$mean)) 
+
+# Full model - start with full and reduce as needed
+model1 <- lmer(log(mean) ~ enzyme + (1|age), data = deam_n)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) 
+
+# Null model
+model0 <- lmer(log(mean) ~ 1 + (1|age), data = deam_n)
+
+# Compare models
+anova(model1, model0) 
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+### Q
+
+# Find Box-Cox transformation of the data
+MASS::boxcox(lm(mean~bone, data=deam_q))
+MASS::boxcox(lm(mean~enzyme, data=deam_q)) 
+
+# Checking transformation
+ggqqplot(sqrt(deam_q$mean)) 
+hist(sqrt(deam_q$mean)) 
+
+# Full model - start with full and reduce as needed
+model1 <- lmer(sqrt(mean) ~ enzyme + (1|bone), data = deam_q)
+
+# See if random factor is needed 
+rand(model1, reduce.terms = TRUE) 
+
+# Null model
+model0 <- lmer(sqrt(mean) ~ 1 + (1|bone), data = deam_q)
+
+# Compare models
+anova(model1, model0) 
+
+# Check model
+plot(model1)
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+# Plot
+deamidation <- ggplot(deam, aes(x=enzyme, y=mean, fill=enzyme)) + 
+  geom_boxplot() +
+  stat_summary(fun.y=median, geom="point", shape=21, size=3.5) +
+  scale_fill_manual(values=met.brewer("Derain", 5), name="Amino acid") +
+  facet_grid(n_q~bone) +
+  expand_limits(y=c(0,100)) +
+  xlab("") + 
+  ylab("Deamidation") +
+  theme_bw()  +
+  theme(axis.text.x=element_blank())
+
+# Combine plots
+diagenesis <- ggarrange(length, deamidation, labels=c("a)", "b)"), common.legend=TRUE, legend="bottom", nrow=1)
+
+# Export figure
+ggsave("<PATH_TO>/enzexp2_diagenesis.pdf", diagenesis, width=8, height=4)
+```
+
+## Cleavage sites
+
+```{r}
+# Import datasets 
+peptide_cow <- read_delim("<PATH_TO>/peptides.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(!reverse %in% c("+")) %>%
+  filter(!str_detect(proteins, "P00766|A0A452DI93|F1N152|P0C1U8|P00761|P07477")) %>%
+  select("n_term_cleavage_window", 71:80)
+peptide_horse <- read_delim("<PATH_TO>/peptides.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE) %>%
+  clean_names() %>%
+  filter(!reverse %in% c("+")) %>%
+  filter(!str_detect(proteins, "F6T323|F7BC37|P13645|P0C1U8|P00766|P00761|P35527|P35908|P00766|P04264|P07477|P35908|P13645")) %>%
+  select("n_term_cleavage_window", 95:116)
+
+# Remove peptides with missing aa's
+peptide_cow <- peptide_cow %>%
+  filter(!grepl('_', n_term_cleavage_window))
+peptide_horse <- peptide_horse %>%
+  filter(!grepl('_', n_term_cleavage_window))
+
+# Filter for  presence
+peptide_cow <- peptide_cow %>%
+  pivot_longer(names_to = "enzyme", values_to = "intensity", 2:11) %>%
+  filter(intensity >0) %>%
+  separate(enzyme, c("remove", "sample"), "sity_") %>%
+  select(-remove)
+peptide_horse <- peptide_horse %>%
+  pivot_longer(names_to = "enzyme", values_to = "intensity", 2:23) %>%
+  filter(intensity >0) %>%
+  separate(enzyme, c("remove", "sample"), "sity_") %>%
+  select(-remove)
+
+# Cut first and last 10 aa's
+peptide_cow <- peptide_cow %>%
+  mutate(n_term_cleavage_window = str_sub(n_term_cleavage_window, 11, -1)) %>%
+  mutate(n_term_cleavage_window = str_sub(n_term_cleavage_window, end=-11))
+peptide_horse <- peptide_horse %>%
+  mutate(n_term_cleavage_window = str_sub(n_term_cleavage_window, 11, -1)) %>%
+  mutate(n_term_cleavage_window = str_sub(n_term_cleavage_window, end=-11))
+
+# Add metadata
+peptide_cow <- left_join(peptide_cow, meta)
+peptide_horse <- left_join(peptide_horse, meta)
+
+# Summarize
+peptide_cow_summary <- peptide_cow %>%
+  select(n_term_cleavage_window, enzyme, bone) %>%
+  distinct()
+peptide_horse_summary <- peptide_horse %>%
+  select(n_term_cleavage_window, enzyme, bone) %>%
+  distinct()
+
+# Make into list - there's gotta be a more smooth way to do this but I'm still tired
+peptide_cow_trypsin <- peptide_cow_summary %>%
+  filter(enzyme == "Trypsin")
+peptide_cow_chy <- peptide_cow_summary %>%
+  filter(enzyme == "Chymotrypsin+trypsin")
+peptide_cow_glu <- peptide_cow_summary %>%
+  filter(enzyme == "Glu-C+trypsin")
+peptide_cow_pro <- peptide_cow_summary %>%
+  filter(enzyme == "ProAlanase+trypsin")
+peptide_cow_list <- list(peptide_cow_trypsin$n_term_cleavage_window,
+                       peptide_cow_chy$n_term_cleavage_window,
+                       peptide_cow_glu$n_term_cleavage_window,
+                       peptide_cow_pro$n_term_cleavage_window)
+names(peptide_cow_list) <- c("Trypsin", "Chymotrypsin+trypsin", "Glu-C+trypsin", "ProAlanase+trypsin") 
+
+peptide_horse_trypsin <- peptide_horse_summary %>%
+  filter(enzyme == "Trypsin")
+peptide_horse_chy <- peptide_horse_summary %>%
+  filter(enzyme == "Chymotrypsin+trypsin")
+peptide_horse_glu <- peptide_horse_summary %>%
+  filter(enzyme == "Glu-C+trypsin")
+peptide_horse_pro <- peptide_horse_summary %>%
+  filter(enzyme == "ProAlanase+trypsin")
+peptide_horse_list <- list(peptide_horse_trypsin$n_term_cleavage_window,
+                       peptide_horse_chy$n_term_cleavage_window,
+                       peptide_horse_glu$n_term_cleavage_window,
+                       peptide_horse_pro$n_term_cleavage_window)
+names(peptide_horse_list) <- c("Trypsin", "Chymotrypsin+trypsin", "Glu-C+trypsin", "ProAlanase+trypsin") 
+
+# Plot
+seq_cow <- ggseqlogo(peptide_cow_list, ncol=2)
+seq_horse <- ggseqlogo(peptide_horse_list, ncol=2)
+
+# Combine plots
+seq_logos <- ggarrange(seq_cow, seq_horse, nrow=1, common.legend=TRUE, legend="bottom",
+          labels=c("a)", "b)"))
+```
