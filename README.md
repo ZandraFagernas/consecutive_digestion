@@ -1,1 +1,1 @@
-# consecutive_digestion
+This folder contains R code used for the manuscript "Digging deeper into ancient skeletal proteomes through consecutive digestion with multiple proteases". DOI and link to raw data will be added once the manuscript is published.
